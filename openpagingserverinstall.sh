@@ -10,13 +10,8 @@ EOF
 
 echo
 
-if [ ! -r /dev/tty ]; then
-    echo "ABORTING"
-    exit 1
-fi
-
-printf "Type LAB USE ONLY to continue: " > /dev/tty
-IFS= read -r confirm < /dev/tty
+printf ":" > /dev/tty
+read -r confirm < /dev/tty
 
 if [ "$confirm" != "LAB USE ONLY" ]; then
     echo "ABORTING"
