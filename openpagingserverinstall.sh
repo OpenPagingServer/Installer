@@ -9,7 +9,14 @@ This script is currently only designed for Debian. Python 3 will be installed if
 EOF
 
 echo
-read -r -p "Type LAB USE ONLY to continue: " confirm
+
+if [ ! -r /dev/tty ]; then
+    echo "ABORTING"
+    exit 1
+fi
+
+printf "Type LAB USE ONLY to continue: " > /dev/tty
+IFS= read -r confirm < /dev/tty
 
 if [ "$confirm" != "LAB USE ONLY" ]; then
     echo "ABORTING"
@@ -17,4 +24,3 @@ if [ "$confirm" != "LAB USE ONLY" ]; then
 fi
 
 echo "Continuing..."
-echo "Coming soon..."
