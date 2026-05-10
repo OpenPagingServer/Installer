@@ -4,6 +4,8 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+INSTALLER_ENDPOINT="${OPS_INSTALLER_ENDPOINT:-https://install.openpagingserver.org/}"
+
 cat <<'EOF'
 
 ==============================================
@@ -56,7 +58,7 @@ apt install -y \
   build-essential pkg-config \
   mariadb-server mariadb-client \
   ffmpeg fontconfig fonts-dejavu-core \
-  git curl ca-certificates
+  git curl ca-certificates tar
 
 NGINX_BIN="$(command -v nginx || true)"
 
@@ -74,12 +76,117 @@ systemctl enable --now mariadb
 mkdir -p /opt
 mkdir -p /var/lib/openpagingserver
 
-if [ -d /opt/OpenPagingServer/.git ]; then
-    git -C /opt/OpenPagingServer pull
+RELEASES_JSON="$(mktemp /tmp/openpagingserver-releases.XXXXXX.json)"
+ARCHIVE_FILE="$(mktemp /tmp/openpagingserver.XXXXXX.tar.gz)"
+
+cleanup_installer_tmp() {
+    rm -f "$RELEASES_JSON" "$ARCHIVE_FILE"
+}
+
+trap cleanup_installer_tmp EXIT
+
+curl -fsSL \
+  -H "X-OPS-Command: releases" \
+  "$INSTALLER_ENDPOINT" \
+  -o "$RELEASES_JSON"
+
+TAG_COUNT="$(python3 - "$RELEASES_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+if data.get("status") != "ok":
+    print("0")
+else:
+    print(len(data.get("items", [])))
+PY
+)"
+
+SELECTED_REF="main"
+
+if [ "$TAG_COUNT" -gt 1 ]; then
+    echo
+    echo "More than one OpenPagingServer tag was found."
+    echo "Pick which release you want to install:"
+    echo
+
+    python3 - "$RELEASES_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for index, item in enumerate(data.get("items", []), start=1):
+    print(f"{index}) {item.get('name', item.get('ref', 'unknown'))}")
+PY
+
+    echo
+    printf "Enter release number: " > /dev/tty
+    read -r release_choice < /dev/tty
+
+    SELECTED_REF="$(python3 - "$RELEASES_JSON" "$release_choice" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+choice_raw = sys.argv[2]
+
+try:
+    choice = int(choice_raw)
+except ValueError:
+    print("")
+    sys.exit(0)
+
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+items = data.get("items", [])
+
+if choice < 1 or choice > len(items):
+    print("")
+    sys.exit(0)
+
+print(items[choice - 1].get("ref", ""))
+PY
+)"
+
+    if [ -z "$SELECTED_REF" ]; then
+        echo "Invalid release number."
+        exit 1
+    fi
+elif [ "$TAG_COUNT" -eq 1 ]; then
+    SELECTED_REF="$(python3 - "$RELEASES_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+items = data.get("items", [])
+print(items[0].get("ref", "main") if items else "main")
+PY
+)"
 else
-    rm -rf /opt/OpenPagingServer
-    git clone https://github.com/OpenPagingServer/OpenPagingServer /opt/OpenPagingServer
+    echo "No tags found. Installing main branch."
+    SELECTED_REF="main"
 fi
+
+echo
+echo "Installing OpenPagingServer ref: $SELECTED_REF"
+
+rm -rf /opt/OpenPagingServer
+mkdir -p /opt/OpenPagingServer
+
+curl -fsSL \
+  -H "X-OPS-Command: download" \
+  "$INSTALLER_ENDPOINT?ref=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$SELECTED_REF")" \
+  -o "$ARCHIVE_FILE"
+
+tar -xzf "$ARCHIVE_FILE" -C /opt/OpenPagingServer --strip-components=1
+rm -f "$ARCHIVE_FILE"
 
 if [ -d /var/lib/openpagingserver/assets/.git ]; then
     git -C /var/lib/openpagingserver/assets pull
