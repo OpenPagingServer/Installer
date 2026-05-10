@@ -5,11 +5,26 @@ set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 cat <<'EOF'
+
+==============================================
 WARNING: This is beta software
+==============================================
 
-You are about to install an experimental project still in beta. Open Paging Server is currently in a very early beta state and is not yet tested or suitable for production use. You will MOST likely encounter bugs. If so, please make an issue on the project GitHub. By continuing, you authorize that this is being used in a lab or hobby environment only, and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
 
-This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. Nginx and PHP will be installed. If you already have Nginx, your current configuration will be moved to /etc/nginx-old. A future version of the install script will be able to handle this properly. Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. The Cisco and Polycom modules will also be downloaded.
+You are about to install an experimental project still in beta. 
+Open Paging Server is currently in a very early beta state and is not yet tested or suitable for production use. 
+You will MOST likely encounter bugs. If so, please make an issue on the project GitHub. 
+By continuing, you authorize that this is being used in a lab or hobby environment only,
+and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
+
+This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
+Nginx and PHP will be installed. If you already have Nginx, your current configuration will be moved to /etc/nginx-old.
+A future version of the install script will be able to handle this properly. 
+Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
+The Cisco and Polycom modules will also be downloaded.
+
+EOF
+
 EOF
 
 echo
@@ -56,6 +71,9 @@ if [ -z "$NGINX_BIN" ]; then
     exit 1
 fi
 
+systemctl stop openpagingserver || true
+systemctl stop nginx || true
+
 systemctl enable --now mariadb
 
 mkdir -p /opt
@@ -75,8 +93,6 @@ else
     git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
 fi
 
-systemctl stop nginx || true
-
 if [ -d /etc/nginx-old ]; then
     rm -rf /etc/nginx-old
 fi
@@ -88,8 +104,6 @@ fi
 git clone https://github.com/OpenPagingServer/nginx-config /etc/nginx
 
 "$NGINX_BIN" -t
-systemctl enable --now nginx
-systemctl reload nginx
 
 mkdir -p /opt/OpenPagingServer/endpoint-modules
 
@@ -147,6 +161,8 @@ else
     exit 1
 fi
 
+sleep 5
+
 cat > /etc/systemd/system/openpagingserver.service <<'EOF'
 [Unit]
 Description=Open Paging Server
@@ -168,8 +184,11 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl enable nginx
+systemctl start nginx
+systemctl reload nginx
 systemctl enable openpagingserver
-systemctl restart openpagingserver
+systemctl start openpagingserver
 
 echo
 echo "Open Paging Server install finished."
