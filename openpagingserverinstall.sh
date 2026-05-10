@@ -25,7 +25,6 @@ The Cisco and Polycom modules will also be downloaded.
 
 EOF
 
-EOF
 
 echo
 printf ":" > /dev/tty
