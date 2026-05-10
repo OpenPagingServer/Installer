@@ -69,9 +69,6 @@ if [ -z "$NGINX_BIN" ]; then
     exit 1
 fi
 
-systemctl stop openpagingserver || true
-systemctl stop nginx || true
-
 systemctl enable --now mariadb
 
 mkdir -p /opt
