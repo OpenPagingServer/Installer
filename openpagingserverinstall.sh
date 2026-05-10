@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 cat <<'EOF'
 WARNING: This is beta software
 
@@ -43,11 +45,21 @@ apt install -y \
   ffmpeg fontconfig fonts-dejavu-core \
   git curl ca-certificates
 
+NGINX_BIN="$(command -v nginx || true)"
+
+if [ -z "$NGINX_BIN" ] && [ -x /usr/sbin/nginx ]; then
+    NGINX_BIN="/usr/sbin/nginx"
+fi
+
+if [ -z "$NGINX_BIN" ]; then
+    echo "Nginx installed but nginx binary was not found."
+    exit 1
+fi
+
 systemctl enable --now mariadb
 
 mkdir -p /opt
 mkdir -p /var/lib/openpagingserver
-mkdir -p /opt/OpenPagingServer
 
 if [ -d /opt/OpenPagingServer/.git ]; then
     git -C /opt/OpenPagingServer pull
@@ -75,7 +87,7 @@ fi
 
 git clone https://github.com/OpenPagingServer/nginx-config /etc/nginx
 
-nginx -t
+"$NGINX_BIN" -t
 systemctl enable --now nginx
 systemctl reload nginx
 
@@ -160,5 +172,6 @@ systemctl enable openpagingserver
 systemctl restart openpagingserver
 
 echo
-echo "The done????"
+echo "Open Paging Server install finished."
+echo "Service status:"
 systemctl --no-pager --full status openpagingserver || true
