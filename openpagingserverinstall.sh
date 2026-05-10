@@ -1,177 +1,227 @@
-#!/usr/bin/env bash
+import subprocess
+import sys
+import random
+import string
+import mysql.connector
+import os
 
-set -euo pipefail
+def random_password(length=32):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+env_path = os.path.join(base_dir, ".env")
+web_dir = os.path.join(base_dir, "web")
+config_path = os.path.join(web_dir, "config.php")
 
-cat <<'EOF'
-WARNING: This is beta software
+try:
+    conn = mysql.connector.connect(
+        user="root",
+        unix_socket="/var/run/mysqld/mysqld.sock"
+    )
+except mysql.connector.Error:
+    print("Root socket auth failed, enter credentials:")
+    user = input("Username: ")
+    passwd = input("Password: ")
+    try:
+        conn = mysql.connector.connect(user=user, password=passwd)
+    except mysql.connector.Error as e:
+        print("Connection failed:", e)
+        sys.exit(1)
 
-You are about to install an experimental project still in beta. Open Paging Server is currently in a very early beta state and is not yet tested or suitable for production use. You will MOST likely encounter bugs. If so, please make an issue on the project GitHub. By continuing, you authorize that this is being used in a lab or hobby environment only, and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
+cursor = conn.cursor()
+cursor.execute("SHOW DATABASES LIKE 'openpagingserver'")
+if cursor.fetchone():
+    overwrite = input("Database exists. Overwrite? (y/n): ")
+    if overwrite.lower() != "y":
+        print("Exiting.")
+        sys.exit(0)
+    cursor.execute("DROP DATABASE openpagingserver")
 
-This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. Nginx and PHP will be installed. If you already have Nginx, your current configuration will be moved to /etc/nginx-old. A future version of the install script will be able to handle this properly. Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. The Cisco and Polycom modules will also be downloaded.
-EOF
+cursor.execute("CREATE DATABASE openpagingserver")
+cursor.execute("USE openpagingserver")
 
-echo
-printf ":" > /dev/tty
-read -r confirm < /dev/tty
+db_password = random_password()
+cursor.execute("DROP USER IF EXISTS 'openpagingserver'@'localhost'")
+cursor.execute("DROP USER IF EXISTS 'openpagingserver'@'127.0.0.1'")
+cursor.execute(f"CREATE USER 'openpagingserver'@'localhost' IDENTIFIED BY '{db_password}'")
+cursor.execute(f"CREATE USER 'openpagingserver'@'127.0.0.1' IDENTIFIED BY '{db_password}'")
+cursor.execute("GRANT ALL PRIVILEGES ON openpagingserver.* TO 'openpagingserver'@'localhost'")
+cursor.execute("GRANT ALL PRIVILEGES ON openpagingserver.* TO 'openpagingserver'@'127.0.0.1'")
+cursor.execute("FLUSH PRIVILEGES")
 
-if [ "$confirm" != "LAB USE ONLY" ]; then
-    echo "ABORTING"
-    exit 1
-fi
+cursor.execute("""
+CREATE TABLE messages (
+    type ENUM('liveaudio','liveaudio+text','text','text+audio','audio','record','record+text','text+audio+live'),
+    messageid INT,
+    name VARCHAR(255),
+    shortmessage TEXT,
+    longmessage TEXT,
+    audio VARCHAR(255),
+    image VARCHAR(255) DEFAULT '',
+    color VARCHAR(7),
+    icon VARCHAR(255) DEFAULT ''
+)
+""")
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Run this script as root or with sudo."
-    exit 1
-fi
+cursor.execute("""
+CREATE TABLE broadcats (
+    id VARCHAR(100),
+    shortmessage VARCHAR(100),
+    longmessage TEXT,
+    icon VARCHAR(100),
+    color VARCHAR(100),
+    vendor_specific VARCHAR(100),
+    type ENUM('Page','AudioMessage','TextMessage','Text+AudioMessage'),
+    expires DATETIME,
+    issued DATETIME,
+    groups TEXT,
+    image VARCHAR(100),
+    audio VARCHAR(10000),
+    sender VARCHAR(100),
+    priority ENUM('Low','Normal','High','Emergency'),
+    delivery VARCHAR(100),
+    name VARCHAR(100),
+    UNIQUE KEY id_unique (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+""")
 
-if ! grep -qi debian /etc/os-release; then
-    echo "This installer is only designed for Debian."
-    exit 1
-fi
+cursor.execute("""
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    password VARCHAR(64) NOT NULL, 
+    salt VARCHAR(64) NOT NULL,
+    role ENUM('admin','tempadmin','user','tempuser','receiver','tempreceiver') NOT NULL,
+    loginsleft INT DEFAULT 0,
+    logincount INT DEFAULT 0,
+    lastlogin DATETIME,
+    accountexpire DATE,
+    accountcreated DATE DEFAULT CURRENT_DATE,
+    adminperm LONGTEXT,
+    msgsendperm LONGTEXT,
+    userperm LONGTEXT
+)
+""")
 
-echo "Continuing..."
+cursor.execute("""
+CREATE TABLE login_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip VARCHAR(45),
+    username VARCHAR(255),
+    success TINYINT(1),
+    attempt_time DATETIME,
+    user_agent TEXT
+) ENGINE=InnoDB
+""")
 
-export DEBIAN_FRONTEND=noninteractive
+cursor.execute("""
+CREATE TABLE enabledmodules (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    path VARCHAR(255) NOT NULL,
+    status TINYINT(1) NOT NULL DEFAULT 1,
+    webpath VARCHAR(255) NOT NULL,
+    webroles VARCHAR(255) NOT NULL DEFAULT 'user',
+    webinterface TINYINT(1) NOT NULL DEFAULT 1,
+    webname VARCHAR(255) NOT NULL DEFAULT '',
+    webicon VARCHAR(50) NOT NULL DEFAULT 'fa-circle',
+    PRIMARY KEY (id),
+    UNIQUE KEY path_unique (path)
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+""")
 
-apt update
+cursor.execute("""
+CREATE TABLE `endpoints-input-sip` (
+    name VARCHAR(100) DEFAULT NULL,
+    extension VARCHAR(100) DEFAULT NULL,
+    `group` VARCHAR(100) DEFAULT NULL,
+    `trigger` VARCHAR(100) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+""")
 
-apt install -y \
-  nginx php-fpm php-cli php-mysql php-xml php-mbstring \
-  python3 python3-venv python3-pip python3-dev \
-  build-essential pkg-config \
-  mariadb-server mariadb-client \
-  ffmpeg fontconfig fonts-dejavu-core \
-  git curl ca-certificates
+cursor.execute("""
+CREATE TABLE groups (
+    id VARCHAR(100) DEFAULT NULL,
+    name VARCHAR(100) DEFAULT NULL,
+    members VARCHAR(100) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+""")
 
-NGINX_BIN="$(command -v nginx || true)"
+cursor.execute("""
+CREATE TABLE systemsettings (
+    parameter VARCHAR(128) NOT NULL,
+    value TEXT NOT NULL,
+    description TEXT NOT NULL,
+    PRIMARY KEY (parameter)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+""")
 
-if [ -z "$NGINX_BIN" ] && [ -x /usr/sbin/nginx ]; then
-    NGINX_BIN="/usr/sbin/nginx"
-fi
+cursor.execute("INSERT INTO messages VALUES ('text+audio',1,'SRP HOLD','HOLD! In your area.','Hold! In your room or area. Clear the halls.','OPS-400HZ-MedPulse.wav:OPS-SRP-Hold.wav','',NULL,'')")
+cursor.execute("INSERT INTO messages VALUES ('text+audio',2,'SRP SECURE','SECURE!','Secure! Get Inside. Lock outside doors.','OPS-400HZ-MedPulse.wav:OPS-SRP-Secure.wav','',NULL,'')")
+cursor.execute("INSERT INTO messages VALUES ('text+audio',3,'SRP LOCKDOWN','LOCKDOWN! Locks, Lights, Out of Sight.','LOCKDOWN! Locks, Lights, Out of Sight.','OPS-400HZ-MedPulse.wav:OPS-SRP-Lockdown.wav','',NULL,'')")
+cursor.execute("INSERT INTO messages VALUES ('text+audio',5,'TEST Message','This is a test of Open Paging Server','This is a test of the Open Paging Server MNS system. No action is required.','OPS-900HZ-SlowPulse.wav:OPS-TESTING.wav','',NULL,'')")
+cursor.execute("INSERT INTO enabledmodules VALUES (3,'modules/bells',1,'/bells.php','user,admin,tempadmin',1,'Bell Schedules','fa-bell')")
+cursor.execute("INSERT INTO enabledmodules VALUES (4,'modules/wakeup',1,'/wakeup.php','user,admin,tempadmin',1,'Wake Up Calls','fa-bed')")
 
-if [ -z "$NGINX_BIN" ]; then
-    echo "Nginx installed but nginx binary was not found."
-    exit 1
-fi
+cursor.execute("INSERT INTO systemsettings VALUES ('enable_insecure_sip','1','Enable SIP over UDP and TCP (0/1)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('enable_login_logo','1','Enable the logo on login page')")
+cursor.execute("INSERT INTO systemsettings VALUES ('enable_secure_sip','0','Enable SIP over TLS (0 = NO, 1 = Yes with same cert as web server, 2 = Yes with independent cert)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('favicon','/assets/favicon.svg','Browser Favicon. Path to file within web server.')")
+cursor.execute("INSERT INTO systemsettings VALUES ('insecure_sip_port','5060','Port for UDP/TCP SIP')")
+cursor.execute("INSERT INTO systemsettings VALUES ('login_banner_enabled','1','Enable or disable the login page banner (0/1)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('login_banner_message','OPS is currently in early devlopment stages, and is not yet suitable for production use.  Visit our website at https://www.openpagingserver.org to learn how to contribute and to join our Discord. Thank you for installing the Open Paging Server beta!','Message text for the login page banner')")
+cursor.execute("INSERT INTO systemsettings VALUES ('login_banner_title','Welcome to Open Paging Server Beta!!!','Optional title for the login page banner')")
+cursor.execute("INSERT INTO systemsettings VALUES ('login_logo_dark','/assets/OPENPAGINGSERVER-768x576-DARKMODE.png','Dark mode logo. Path to file within web server.')")
+cursor.execute("INSERT INTO systemsettings VALUES ('login_logo_light','/assets/OPENPAGINGSERVER-768x576-LIGHTMODE.png','Light mode logo. Path to file within web server.')")
+cursor.execute("INSERT INTO systemsettings VALUES ('product_name','Open Paging Server','Name of this server.')")
+cursor.execute("INSERT INTO systemsettings VALUES ('secure_sip_cert','','If enable_secure_sip is 2, this cert will be used. Path to file')")
+cursor.execute("INSERT INTO systemsettings VALUES ('secure_sip_port','5061','Port for TLS SIP')")
+cursor.execute("INSERT INTO systemsettings VALUES ('secure_sip_privkey','','If enable_secure_sip is 2, this private key will be used. Path to file')")
+cursor.execute("INSERT INTO systemsettings VALUES ('separate_dark_logo','1','Use a separate logo for dark mode. When disabled, uses only logo_light. (0/1)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('show_online_docs','1','Show GUI links to docs.openpagingserver.org (0/1)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('webserver_https_enable','0','HTTPs Enable (0/1)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('webserver_https_port','443','HTTPs Server Port (Default: 443)')")
+cursor.execute("INSERT INTO systemsettings VALUES ('webserver_http_port','80','HTTP Server Port (Default: 80)')")
 
-systemctl enable --now mariadb
+conn.commit()
+conn.close()
 
-mkdir -p /opt
-mkdir -p /var/lib/openpagingserver
+env_file = f"""DB_HOST='127.0.0.1'
+DB_USER='openpagingserver'
+DB_PASS='{db_password}'
+DB_NAME='openpagingserver'
+DEBUG=false
+"""
 
-if [ -d /opt/OpenPagingServer/.git ]; then
-    git -C /opt/OpenPagingServer pull
-else
-    rm -rf /opt/OpenPagingServer
-    git clone https://github.com/OpenPagingServer/OpenPagingServer /opt/OpenPagingServer
-fi
+config_php = f"""<?php
+$host = 'localhost';
+$db   = 'openpagingserver';
+$user = 'openpagingserver';
+$pass = '{db_password}';
+$charset = 'utf8mb4';
 
-if [ -d /var/lib/openpagingserver/assets/.git ]; then
-    git -C /var/lib/openpagingserver/assets pull
-else
-    rm -rf /var/lib/openpagingserver/assets
-    git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
-fi
+$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+];
 
-systemctl stop nginx || true
+try {{
+    $pdo = new PDO($dsn, $user, $pass, $options);
+}} catch (\\PDOException $e) {{
+    throw new \\PDOException($e->getMessage(), (int)$e->getCode());
+}}
+"""
 
-if [ -d /etc/nginx-old ]; then
-    rm -rf /etc/nginx-old
-fi
+os.makedirs(web_dir, exist_ok=True)
 
-if [ -d /etc/nginx ]; then
-    mv /etc/nginx /etc/nginx-old
-fi
+with open(env_path, "w") as f:
+    f.write(env_file)
 
-git clone https://github.com/OpenPagingServer/nginx-config /etc/nginx
+with open(config_path, "w") as f:
+    f.write(config_php)
 
-"$NGINX_BIN" -t
-systemctl enable --now nginx
-systemctl reload nginx
-
-mkdir -p /opt/OpenPagingServer/endpoint-modules
-
-if [ -d /opt/OpenPagingServer/endpoint-modules/cisco/.git ]; then
-    git -C /opt/OpenPagingServer/endpoint-modules/cisco pull
-else
-    rm -rf /opt/OpenPagingServer/endpoint-modules/cisco
-    git clone https://github.com/OpenPagingServer/cisco /opt/OpenPagingServer/endpoint-modules/cisco
-fi
-
-if [ -d /opt/OpenPagingServer/endpoint-modules/polycom/.git ]; then
-    git -C /opt/OpenPagingServer/endpoint-modules/polycom pull
-else
-    rm -rf /opt/OpenPagingServer/endpoint-modules/polycom
-    git clone https://github.com/OpenPagingServer/polycom /opt/OpenPagingServer/endpoint-modules/polycom
-fi
-
-cd /opt/OpenPagingServer
-
-python3 -m venv /opt/OpenPagingServer/.venv
-
-/opt/OpenPagingServer/.venv/bin/python -m pip install --upgrade pip setuptools wheel
-
-if [ -f /opt/OpenPagingServer/requirements.txt ]; then
-    /opt/OpenPagingServer/.venv/bin/pip install -r /opt/OpenPagingServer/requirements.txt
-fi
-
-if [ -f /opt/OpenPagingServer/endpoint-modules/cisco/requirements.txt ]; then
-    /opt/OpenPagingServer/.venv/bin/pip install -r /opt/OpenPagingServer/endpoint-modules/cisco/requirements.txt
-fi
-
-if [ -f /opt/OpenPagingServer/endpoint-modules/polycom/requirements.txt ]; then
-    /opt/OpenPagingServer/.venv/bin/pip install -r /opt/OpenPagingServer/endpoint-modules/polycom/requirements.txt
-fi
-
-/opt/OpenPagingServer/.venv/bin/pip install \
-  flask \
-  flask-cors \
-  pymysql \
-  python-dotenv \
-  requests \
-  pillow \
-  numpy \
-  lxml \
-  aiohttp \
-  websockets \
-  cryptography \
-  passlib \
-  argon2-cffi
-
-if [ -f /opt/OpenPagingServer/scripts/database-initialization.py ]; then
-    /opt/OpenPagingServer/.venv/bin/python /opt/OpenPagingServer/scripts/database-initialization.py
-else
-    echo "Missing /opt/OpenPagingServer/scripts/database-initialization.py"
-    exit 1
-fi
-
-cat > /etc/systemd/system/openpagingserver.service <<'EOF'
-[Unit]
-Description=Open Paging Server
-After=network-online.target mariadb.service nginx.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/OpenPagingServer
-ExecStart=/opt/OpenPagingServer/.venv/bin/python /opt/OpenPagingServer/index.py
-Restart=always
-RestartSec=5
-User=root
-Group=root
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable openpagingserver
-systemctl restart openpagingserver
-
-echo
-echo "Open Paging Server install finished."
-echo "Service status:"
-systemctl --no-pager --full status openpagingserver || true
+print("Done.")
+print(f"Wrote {env_path}")
+print(f"Wrote {config_path}")
