@@ -480,5 +480,3 @@ systemctl start openpagingserver
 
 echo
 echo "Open Paging Server install finished."
-echo "Service status:"
-systemctl --no-pager --full status openpagingserver || true
