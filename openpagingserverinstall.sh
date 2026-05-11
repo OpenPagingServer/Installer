@@ -479,4 +479,49 @@ systemctl enable openpagingserver
 systemctl start openpagingserver
 
 echo
-echo "Open Paging Server install finished."
+
+IPS=$(ip -4 addr show | awk '/inet / {print $2}' | cut -d/ -f1 | grep -v '^127\.')
+
+lines=("Open Paging Server has been installed." "To start using Open Paging Server, access it in a web browser:")
+for ip in $IPS; do
+    if [ -n "$ip" ]; then
+        lines+=("http://$ip")
+    fi
+done
+
+max_len=0
+for line in "${lines[@]}"; do
+    if [ ${#line} -gt $max_len ]; then
+        max_len=${#line}
+    fi
+done
+
+box_width=$((max_len + 4))
+term_width=$(tput cols 2>/dev/null || echo 80)
+padding=$(( (term_width - box_width) / 2 ))
+if [ "$padding" -lt 0 ]; then padding=0; fi
+
+pad_str=""
+if [ "$padding" -gt 0 ]; then
+    pad_str=$(printf '%*s' "$padding" "")
+fi
+
+border=$(printf '═%.0s' $(seq 1 $box_width))
+echo "${pad_str}╔${border}╗"
+
+for line in "${lines[@]}"; do
+    line_len=${#line}
+    left_pad=$(( (max_len - line_len) / 2 ))
+    right_pad=$(( max_len - line_len - left_pad ))
+    
+    left_space=""
+    [ "$left_pad" -gt 0 ] && left_space=$(printf '%*s' "$left_pad" "")
+    
+    right_space=""
+    [ "$right_pad" -gt 0 ] && right_space=$(printf '%*s' "$right_pad" "")
+    
+    echo "${pad_str}║  ${left_space}${line}${right_space}  ║"
+done
+
+echo "${pad_str}╚${border}╝"
+echo
