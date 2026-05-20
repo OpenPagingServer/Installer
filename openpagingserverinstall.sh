@@ -108,24 +108,25 @@ PY
         echo
 
         python3 - "$RELEASES_JSON" <<'PY'
-import json
-import sys
-
+import json, sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-
 for index, item in enumerate(data.get("items", []), start=1):
     print(f"{index}) {item.get('name', item.get('ref', 'unknown'))}")
 PY
 
-        echo
-        printf "Enter release number: " > /dev/tty
-        read -r release_choice < /dev/tty
+        while true; do
+            echo
+            printf "Enter release number (or 'q' to quit): " > /dev/tty
+            read -r release_choice < /dev/tty
 
-        SELECTED_REF="$(python3 - "$RELEASES_JSON" "$release_choice" <<'PY'
-import json
-import sys
+            if [ "$release_choice" = "q" ] || [ "$release_choice" = "Q" ]; then
+                echo "Quitting."
+                exit 0
+            fi
 
+            SELECTED_REF="$(python3 - "$RELEASES_JSON" "$release_choice" <<'PY'
+import json, sys
 path = sys.argv[1]
 choice_raw = sys.argv[2]
 
@@ -139,7 +140,6 @@ with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 items = data.get("items", [])
-
 if choice < 1 or choice > len(items):
     print("")
     sys.exit(0)
@@ -148,10 +148,13 @@ print(items[choice - 1].get("ref", ""))
 PY
 )"
 
-        if [ -z "$SELECTED_REF" ]; then
-            echo "Invalid release number."
-            exit 1
-        fi
+            if [ -n "$SELECTED_REF" ]; then
+                break
+            fi
+
+            echo "Invalid release number. Please try again."
+        done
+
     elif [ "$TAG_COUNT" -eq 1 ]; then
         SELECTED_REF="$(python3 - "$RELEASES_JSON" <<'PY'
 import json
