@@ -104,11 +104,12 @@ disable_legacy_nginx_if_needed() {
         CURRENT_VERSION="$(installed_ops_version)"
 
         echo
-        echo "Detected Open Paging Server $CURRENT_VERSION. Disabling Nginx for the 0.1 to 0.2 upgrade."
+        echo "Detected Open Paging Server $CURRENT_VERSION. Stopping Nginx for the 0.1 to 0.2 upgrade."
 
         if command -v systemctl >/dev/null 2>&1; then
-            systemctl stop nginx || true
-            systemctl disable nginx || true
+            sleep 3
+            systemctl stop nginx --now || true
+            sleep 3
         fi
     fi
 }
@@ -301,8 +302,6 @@ upgrade_openpagingserver() {
 
     echo
     echo "Open Paging Server upgrade finished."
-    echo "Service status:"
-    systemctl --no-pager --full status openpagingserver || true
 }
 
 uninstall_openpagingserver() {
@@ -369,7 +368,7 @@ This script is currently only designed for Debian. Python 3 will be installed if
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
 The Cisco and Polycom modules will also be downloaded.
 
-NOTE: If you are updating from 0.1, nginx will be stopped and disabled.
+NOTE: If you are updating from 0.1, nginx will be stopped.
 
 EOF
 
