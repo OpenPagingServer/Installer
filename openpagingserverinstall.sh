@@ -68,6 +68,47 @@ INSTALL_PATH=/opt/OpenPagingServer
 EOF
 }
 
+installed_ops_version() {
+    if [ ! -f "$OPS_DIR/pyproject.toml" ]; then
+        echo ""
+        return 0
+    fi
+
+    python3 - "$OPS_DIR/pyproject.toml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8", errors="replace")
+match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']\s*$', text, re.MULTILINE)
+print(match.group(1) if match else "")
+PY
+}
+
+restore_legacy_nginx_if_needed() {
+    CURRENT_VERSION="$(installed_ops_version)"
+
+    if [ "$CURRENT_VERSION" = "0.1.0" ] || [ "$CURRENT_VERSION" = "0.1.1" ]; then
+        echo
+        echo "Detected Open Paging Server $CURRENT_VERSION. Restoring pre-0.1.2 Nginx backup."
+
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable nginx || true
+        fi
+
+        if [ -e /etc/nginx ]; then
+            rm -r /etc/nginx
+        fi
+
+        if [ -e /etc/nginx-old ]; then
+            mv /etc/nginx-old /etc/nginx
+        else
+            echo "/etc/nginx-old was not found. Skipping Nginx config restore."
+        fi
+    fi
+}
+
 fetch_releases() {
     RELEASES_JSON="$(mktemp /tmp/openpagingserver-releases.XXXXXX.json)"
     curl -fsSL \
@@ -195,6 +236,8 @@ upgrade_openpagingserver() {
     echo
     echo "Upgrading Open Paging Server ref: $SELECTED_REF"
 
+    restore_legacy_nginx_if_needed
+
     if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
         systemctl stop openpagingserver || true
     fi
@@ -205,6 +248,8 @@ upgrade_openpagingserver() {
         if [ -f "$OPS_DIR/requirements.txt" ]; then
             "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
         fi
+
+        "$OPS_DIR/.venv/bin/pip" install waitress
 
         if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
             "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
@@ -287,10 +332,10 @@ By continuing, you authorize that this is being used in a lab or hobby environme
 and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
 
 This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
-Nginx and PHP will be installed. If you already have Nginx, your current configuration will be moved to /etc/nginx-old.
-A future version of the install script will be able to handle this properly. 
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
 The Cisco and Polycom modules will also be downloaded.
+
+NOTE: If you are updating from 0.1, nginx will be disabled, and the old config will be restored.
 
 EOF
 
