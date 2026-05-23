@@ -86,25 +86,29 @@ print(match.group(1) if match else "")
 PY
 }
 
-restore_legacy_nginx_if_needed() {
+is_legacy_0_1_version() {
     CURRENT_VERSION="$(installed_ops_version)"
 
-    if [ "$CURRENT_VERSION" = "0.1.0" ] || [ "$CURRENT_VERSION" = "0.1.1" ]; then
+    case "$CURRENT_VERSION" in
+        0.1|0.1.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+disable_legacy_nginx_if_needed() {
+    if is_legacy_0_1_version; then
+        CURRENT_VERSION="$(installed_ops_version)"
+
         echo
-        echo "Detected Open Paging Server $CURRENT_VERSION. Restoring pre-0.1.2 Nginx backup."
+        echo "Detected Open Paging Server $CURRENT_VERSION. Disabling Nginx for the 0.1 to 0.2 upgrade."
 
         if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop nginx || true
             systemctl disable nginx || true
-        fi
-
-        if [ -e /etc/nginx ]; then
-            rm -r /etc/nginx
-        fi
-
-        if [ -e /etc/nginx-old ]; then
-            mv /etc/nginx-old /etc/nginx
-        else
-            echo "/etc/nginx-old was not found. Skipping Nginx config restore."
         fi
     fi
 }
@@ -230,21 +234,51 @@ download_release_into_ops_dir() {
     write_ops_marker
 }
 
+redownload_endpoint_modules() {
+    mkdir -p "$OPS_DIR/endpoint-modules"
+
+    rm -rf "$OPS_DIR/endpoint-modules/cisco"
+    git clone https://github.com/OpenPagingServer/cisco "$OPS_DIR/endpoint-modules/cisco"
+
+    rm -rf "$OPS_DIR/endpoint-modules/polycom"
+    git clone https://github.com/OpenPagingServer/polycom "$OPS_DIR/endpoint-modules/polycom"
+}
+
 upgrade_openpagingserver() {
     select_release
 
     echo
     echo "Upgrading Open Paging Server ref: $SELECTED_REF"
 
-    restore_legacy_nginx_if_needed
+    disable_legacy_nginx_if_needed
 
     if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
         systemctl stop openpagingserver || true
     fi
 
     download_release_into_ops_dir
+    redownload_endpoint_modules
 
     if [ -x "$OPS_DIR/.venv/bin/python" ]; then
+        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
+
+        if [ -f "$OPS_DIR/requirements.txt" ]; then
+            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
+        fi
+
+        "$OPS_DIR/.venv/bin/pip" install waitress
+
+        if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
+            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
+        fi
+
+        if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
+            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
+        fi
+    else
+        python3 -m venv "$OPS_DIR/.venv"
+        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
+
         if [ -f "$OPS_DIR/requirements.txt" ]; then
             "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
         fi
@@ -262,7 +296,7 @@ upgrade_openpagingserver() {
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload || true
-        systemctl start openpagingserver || true
+        systemctl restart openpagingserver || true
     fi
 
     echo
@@ -335,7 +369,7 @@ This script is currently only designed for Debian. Python 3 will be installed if
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
 The Cisco and Polycom modules will also be downloaded.
 
-NOTE: If you are updating from 0.1, nginx will be disabled, and the old config will be restored.
+NOTE: If you are updating from 0.1, nginx will be stopped and disabled.
 
 EOF
 
@@ -400,21 +434,7 @@ else
     git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
 fi
 
-mkdir -p "$OPS_DIR/endpoint-modules"
-
-if [ -d "$OPS_DIR/endpoint-modules/cisco/.git" ]; then
-    git -C "$OPS_DIR/endpoint-modules/cisco" pull
-else
-    rm -rf "$OPS_DIR/endpoint-modules/cisco"
-    git clone https://github.com/OpenPagingServer/cisco "$OPS_DIR/endpoint-modules/cisco"
-fi
-
-if [ -d "$OPS_DIR/endpoint-modules/polycom/.git" ]; then
-    git -C "$OPS_DIR/endpoint-modules/polycom" pull
-else
-    rm -rf "$OPS_DIR/endpoint-modules/polycom"
-    git clone https://github.com/OpenPagingServer/polycom "$OPS_DIR/endpoint-modules/polycom"
-fi
+redownload_endpoint_modules
 
 cd "$OPS_DIR"
 
