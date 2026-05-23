@@ -238,21 +238,6 @@ uninstall_openpagingserver() {
 
     rm -rf "$OPS_DIR"
 
-    if [ -d /etc/nginx-old ]; then
-        rm -rf /etc/nginx
-        mv /etc/nginx-old /etc/nginx
-
-        if command -v nginx >/dev/null 2>&1; then
-            nginx -t
-        elif [ -x /usr/sbin/nginx ]; then
-            /usr/sbin/nginx -t
-        fi
-
-        if command -v systemctl >/dev/null 2>&1 && service_exists nginx.service; then
-            systemctl reload nginx || systemctl restart nginx || true
-        fi
-    fi
-
     echo
     echo "Open Paging Server uninstall finished."
 }
@@ -339,23 +324,11 @@ export DEBIAN_FRONTEND=noninteractive
 apt update
 
 apt install -y \
-  nginx php-fpm php-cli php-mysql php-xml php-mbstring \
   python3 python3-venv python3-pip python3-dev \
   build-essential pkg-config \
   mariadb-server mariadb-client \
   ffmpeg fontconfig fonts-dejavu-core \
   git curl ca-certificates tar
-
-NGINX_BIN="$(command -v nginx || true)"
-
-if [ -z "$NGINX_BIN" ] && [ -x /usr/sbin/nginx ]; then
-    NGINX_BIN="/usr/sbin/nginx"
-fi
-
-if [ -z "$NGINX_BIN" ]; then
-    echo "Nginx installed but nginx binary was not found."
-    exit 1
-fi
 
 systemctl enable --now mariadb
 
@@ -381,18 +354,6 @@ else
     rm -rf /var/lib/openpagingserver/assets
     git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
 fi
-
-if [ -d /etc/nginx-old ]; then
-    rm -rf /etc/nginx-old
-fi
-
-if [ -d /etc/nginx ]; then
-    mv /etc/nginx /etc/nginx-old
-fi
-
-git clone https://github.com/OpenPagingServer/nginx-config /etc/nginx
-
-"$NGINX_BIN" -t
 
 mkdir -p "$OPS_DIR/endpoint-modules"
 
@@ -432,6 +393,7 @@ fi
   flask \
   flask-cors \
   pymysql \
+  waitress \
   python-dotenv \
   requests \
   pillow \
@@ -455,7 +417,7 @@ sleep 5
 cat > "$OPS_SERVICE" <<'EOF'
 [Unit]
 Description=Open Paging Server
-After=network-online.target mariadb.service nginx.service
+After=network-online.target mariadb.service
 Wants=network-online.target
 
 [Service]
@@ -475,9 +437,6 @@ EOF
 write_ops_marker
 
 systemctl daemon-reload
-systemctl enable nginx
-systemctl start nginx
-systemctl reload nginx
 systemctl enable openpagingserver
 systemctl start openpagingserver
 
