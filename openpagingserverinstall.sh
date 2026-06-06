@@ -4,6 +4,25 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+
+check_supported_cpu_architecture() {
+    arch="$(uname -m)"
+
+    case "$arch" in
+        x86_64|amd64|aarch64|arm64)
+            return 0
+            ;;
+        *)
+            echo "Open Paging Server is not compatible with your CPU architecture."
+            echo "Your CPU must be amd64 (x86_64) or arm64 (AArch64). Your architecture is $arch."
+            echo "Ensure you are using a 64-bit CPU and a 64-bit Opreating System."
+            exit 1
+            ;;
+    esac
+}
+
+check_supported_cpu_architecture
+
 OPS_REPO="https://github.com/OpenPagingServer/OpenPagingServer.git"
 CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
 POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
