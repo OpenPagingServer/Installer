@@ -12,6 +12,7 @@ OPS_DIR="/opt/OpenPagingServer"
 OPS_SERVICE="/etc/systemd/system/openpagingserver.service"
 OPS_MARKER="/opt/OpenPagingServer/.openpagingserver-install"
 ASSETS_DIR="/var/lib/openpagingserver/assets"
+ENDPOINT_MODULES_DIR="/var/lib/openpagingserver/endpointmodules"
 
 service_exists() {
     systemctl list-unit-files "$1" >/dev/null 2>&1
@@ -57,7 +58,7 @@ is_real_openpagingserver_install() {
         return 1
     fi
 
-    if [ -d "$OPS_DIR/endpoint-modules" ]; then
+    if [ -d "$ENDPOINT_MODULES_DIR" ]; then
         return 0
     fi
 
@@ -165,10 +166,54 @@ redownload_assets() {
     checkout_latest_tag_repo "$ASSETS_REPO" "$ASSETS_DIR" "assets"
 }
 
+latest_opsepm_asset_url() {
+    repo="$1"
+    tag="$2"
+
+    repo_path="${repo#https://github.com/}"
+    repo_path="${repo_path%.git}"
+
+    curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 -c 'import json, sys
+data = json.load(sys.stdin)
+for asset in data.get("assets", []):
+    name = asset.get("name", "")
+    url = asset.get("browser_download_url", "")
+    if name.lower().endswith(".opsepm") and url:
+        print(url)
+        raise SystemExit(0)
+raise SystemExit(1)'
+}
+
+download_latest_opsepm_module() {
+    repo="$1"
+    output="$2"
+    name="$3"
+    tag="$(latest_git_tag "$repo")"
+
+    if [ -z "$tag" ]; then
+        echo "No tags found for $name."
+        exit 1
+    fi
+
+    asset_url="$(latest_opsepm_asset_url "$repo" "$tag" || true)"
+
+    if [ -z "$asset_url" ]; then
+        echo "No .opsepm asset found for $name tag: $tag"
+        exit 1
+    fi
+
+    echo "Installing $name .opsepm from tag: $tag"
+    rm -f "$output"
+    curl -fL "$asset_url" -o "$output"
+}
+
 redownload_endpoint_modules() {
-    mkdir -p "$OPS_DIR/endpoint-modules"
-    checkout_latest_tag_repo "$CISCO_REPO" "$OPS_DIR/endpoint-modules/cisco" "Cisco module"
-    checkout_latest_tag_repo "$POLYCOM_REPO" "$OPS_DIR/endpoint-modules/polycom" "Polycom module"
+    mkdir -p "$ENDPOINT_MODULES_DIR"
+    rm -rf "$OPS_DIR/endpoint-modules/cisco" "$OPS_DIR/endpoint-modules/polycom"
+    rm -f "$OPS_DIR/endpoint-modules/cisco.opsepm" "$OPS_DIR/endpoint-modules/polycom.opsepm"
+    rm -f "$ENDPOINT_MODULES_DIR/cisco.opsepm" "$ENDPOINT_MODULES_DIR/polycom.opsepm"
+    download_latest_opsepm_module "$CISCO_REPO" "$ENDPOINT_MODULES_DIR/cisco.opsepm" "Cisco module"
+    download_latest_opsepm_module "$POLYCOM_REPO" "$ENDPOINT_MODULES_DIR/polycom.opsepm" "Polycom module"
 }
 
 install_python_dependencies() {
@@ -180,14 +225,6 @@ install_python_dependencies() {
 
     if [ -f "$OPS_DIR/requirements.txt" ]; then
         "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-    fi
-
-    if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-    fi
-
-    if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
     fi
 
     "$OPS_DIR/.venv/bin/pip" install \
@@ -332,6 +369,7 @@ systemctl enable --now mariadb
 
 mkdir -p /opt
 mkdir -p /var/lib/openpagingserver
+mkdir -p "$ENDPOINT_MODULES_DIR"
 
 echo
 echo "Installing Open Paging Server from GitHub."
