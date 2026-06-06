@@ -4,10 +4,14 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-INSTALLER_ENDPOINT="${OPS_INSTALLER_ENDPOINT:-https://install.openpagingserver.org/}"
+OPS_REPO="https://github.com/OpenPagingServer/OpenPagingServer.git"
+CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
+POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
+ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
 OPS_DIR="/opt/OpenPagingServer"
 OPS_SERVICE="/etc/systemd/system/openpagingserver.service"
 OPS_MARKER="/opt/OpenPagingServer/.openpagingserver-install"
+ASSETS_DIR="/var/lib/openpagingserver/assets"
 
 service_exists() {
     systemctl list-unit-files "$1" >/dev/null 2>&1
@@ -61,11 +65,11 @@ is_real_openpagingserver_install() {
 }
 
 write_ops_marker() {
-    cat > "$OPS_MARKER" <<'EOF'
+    cat > "$OPS_MARKER" <<'EOF_MARKER'
 PROJECT=OpenPagingServer
 SOURCE=https://github.com/OpenPagingServer/OpenPagingServer
 INSTALL_PATH=/opt/OpenPagingServer
-EOF
+EOF_MARKER
 }
 
 installed_ops_version() {
@@ -114,142 +118,98 @@ disable_legacy_nginx_if_needed() {
     fi
 }
 
-fetch_releases() {
-    RELEASES_JSON="$(mktemp /tmp/openpagingserver-releases.XXXXXX.json)"
-    curl -fsSL \
-      -H "X-OPS-Command: releases" \
-      "$INSTALLER_ENDPOINT" \
-      -o "$RELEASES_JSON"
+latest_git_tag() {
+    git ls-remote --tags --refs "$1" 'refs/tags/*' 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -n 1
 }
 
-cleanup_release_file() {
-    if [ -n "${RELEASES_JSON:-}" ]; then
-        rm -f "$RELEASES_JSON"
-    fi
-}
+checkout_default_branch_repo() {
+    repo="$1"
+    path="$2"
 
-select_release() {
-    fetch_releases
-
-    TAG_COUNT="$(python3 - "$RELEASES_JSON" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-if data.get("status") != "ok":
-    print("0")
-else:
-    print(len(data.get("items", [])))
-PY
-)"
-
-    SELECTED_REF="main"
-
-    if [ "$TAG_COUNT" -gt 1 ]; then
-        echo
-        echo "More than one OpenPagingServer tag was found."
-        echo "Pick which release you want to use:"
-        echo
-
-        python3 - "$RELEASES_JSON" <<'PY'
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-for index, item in enumerate(data.get("items", []), start=1):
-    print(f"{index}) {item.get('name', item.get('ref', 'unknown'))}")
-PY
-
-        while true; do
-            echo
-            printf "Enter release number (or 'q' to quit): " > /dev/tty
-            read -r release_choice < /dev/tty
-
-            if [ "$release_choice" = "q" ] || [ "$release_choice" = "Q" ]; then
-                echo "Quitting."
-                exit 0
-            fi
-
-            SELECTED_REF="$(python3 - "$RELEASES_JSON" "$release_choice" <<'PY'
-import json, sys
-path = sys.argv[1]
-choice_raw = sys.argv[2]
-
-try:
-    choice = int(choice_raw)
-except ValueError:
-    print("")
-    sys.exit(0)
-
-with open(path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-items = data.get("items", [])
-if choice < 1 or choice > len(items):
-    print("")
-    sys.exit(0)
-
-print(items[choice - 1].get("ref", ""))
-PY
-)"
-
-            if [ -n "$SELECTED_REF" ]; then
-                break
-            fi
-
-            echo "Invalid release number. Please try again."
-        done
-
-    elif [ "$TAG_COUNT" -eq 1 ]; then
-        SELECTED_REF="$(python3 - "$RELEASES_JSON" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-items = data.get("items", [])
-print(items[0].get("ref", "main") if items else "main")
-PY
-)"
+    if [ -d "$path/.git" ]; then
+        git -C "$path" fetch --all --tags --prune
+        default_branch="$(git -C "$path" remote show origin | awk '/HEAD branch/ {print $NF}')"
+        if [ -z "$default_branch" ]; then
+            default_branch="main"
+        fi
+        git -C "$path" checkout "$default_branch"
+        git -C "$path" reset --hard "origin/$default_branch"
+        git -C "$path" clean -fdx -e .venv
     else
-        echo "No tags found. Using main branch."
-        SELECTED_REF="main"
+        rm -rf "$path"
+        git clone "$repo" "$path"
     fi
 
-    cleanup_release_file
+    write_ops_marker
 }
 
-download_release_into_ops_dir() {
-    ARCHIVE_FILE="$(mktemp /tmp/openpagingserver.XXXXXX.tar.gz)"
+checkout_latest_tag_repo() {
+    repo="$1"
+    path="$2"
+    name="$3"
+    tag="$(latest_git_tag "$repo")"
 
-    curl -fsSL \
-      -H "X-OPS-Command: download" \
-      "$INSTALLER_ENDPOINT?ref=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$SELECTED_REF")" \
-      -o "$ARCHIVE_FILE"
+    rm -rf "$path"
 
-    mkdir -p "$OPS_DIR"
-    tar -xzf "$ARCHIVE_FILE" -C "$OPS_DIR" --strip-components=1
-    rm -f "$ARCHIVE_FILE"
-    write_ops_marker
+    if [ -n "$tag" ]; then
+        echo "Installing $name tag: $tag"
+        git clone --depth 1 --branch "$tag" "$repo" "$path"
+    else
+        echo "No tags found for $name. Using default branch."
+        git clone "$repo" "$path"
+    fi
+}
+
+redownload_assets() {
+    mkdir -p /var/lib/openpagingserver
+    checkout_latest_tag_repo "$ASSETS_REPO" "$ASSETS_DIR" "assets"
 }
 
 redownload_endpoint_modules() {
     mkdir -p "$OPS_DIR/endpoint-modules"
+    checkout_latest_tag_repo "$CISCO_REPO" "$OPS_DIR/endpoint-modules/cisco" "Cisco module"
+    checkout_latest_tag_repo "$POLYCOM_REPO" "$OPS_DIR/endpoint-modules/polycom" "Polycom module"
+}
 
-    rm -rf "$OPS_DIR/endpoint-modules/cisco"
-    git clone https://github.com/OpenPagingServer/cisco "$OPS_DIR/endpoint-modules/cisco"
+install_python_dependencies() {
+    if [ ! -x "$OPS_DIR/.venv/bin/python" ]; then
+        python3 -m venv "$OPS_DIR/.venv"
+    fi
 
-    rm -rf "$OPS_DIR/endpoint-modules/polycom"
-    git clone https://github.com/OpenPagingServer/polycom "$OPS_DIR/endpoint-modules/polycom"
+    "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
+
+    if [ -f "$OPS_DIR/requirements.txt" ]; then
+        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
+    fi
+
+    if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
+        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
+    fi
+
+    if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
+        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
+    fi
+
+    "$OPS_DIR/.venv/bin/pip" install \
+      flask \
+      flask-cors \
+      pymysql \
+      waitress \
+      python-dotenv \
+      requests \
+      pillow \
+      numpy \
+      lxml \
+      aiohttp \
+      websockets \
+      cryptography \
+      passlib \
+      argon2-cffi
 }
 
 upgrade_openpagingserver() {
-    select_release
-
     echo
-    echo "Upgrading Open Paging Server ref: $SELECTED_REF"
+    echo "Upgrading Open Paging Server from GitHub."
 
     disable_legacy_nginx_if_needed
 
@@ -257,43 +217,10 @@ upgrade_openpagingserver() {
         systemctl stop openpagingserver || true
     fi
 
-    download_release_into_ops_dir
+    checkout_default_branch_repo "$OPS_REPO" "$OPS_DIR"
+    redownload_assets
     redownload_endpoint_modules
-
-    if [ -x "$OPS_DIR/.venv/bin/python" ]; then
-        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-        if [ -f "$OPS_DIR/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-        fi
-
-        "$OPS_DIR/.venv/bin/pip" install waitress
-
-        if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-        fi
-
-        if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-        fi
-    else
-        python3 -m venv "$OPS_DIR/.venv"
-        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-        if [ -f "$OPS_DIR/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-        fi
-
-        "$OPS_DIR/.venv/bin/pip" install waitress
-
-        if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-        fi
-
-        if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-        fi
-    fi
+    install_python_dependencies
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload || true
@@ -351,26 +278,19 @@ existing_install_menu() {
     esac
 }
 
-cat <<'EOF'
+cat <<'EOF_WARNING'
 
 ==============================================
-WARNING: This is beta software
+WARNING: TEST INSTALL SCRIPT
 ==============================================
 
 
-You are about to install an experimental project still in beta. 
-Open Paging Server is currently in a very early beta state and is not yet tested or suitable for production use. 
-You will MOST likely encounter bugs. If so, please make an issue on the project GitHub. 
-By continuing, you authorize that this is being used in a lab or hobby environment only,
-and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
+This is the test installer script for Open Paging Server. DO NOT RUN THIS IN A PRODUCTION ENVIRONMENT. 
+The purpose of this is to test updates to the install script before they are pushed to production.
 
-This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
-Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
-The Cisco and Polycom modules will also be downloaded.
+Type LAB USE ONLY to run
 
-NOTE: If you are updating from 0.1, nginx will be stopped.
-
-EOF
+EOF_WARNING
 
 echo
 printf ":" > /dev/tty
@@ -413,61 +333,17 @@ systemctl enable --now mariadb
 mkdir -p /opt
 mkdir -p /var/lib/openpagingserver
 
-RELEASES_JSON=""
-trap cleanup_release_file EXIT
-
-select_release
-
 echo
-echo "Installing OpenPagingServer ref: $SELECTED_REF"
+echo "Installing Open Paging Server from GitHub."
 
 rm -rf "$OPS_DIR"
-mkdir -p "$OPS_DIR"
-
-download_release_into_ops_dir
-
-if [ -d /var/lib/openpagingserver/assets/.git ]; then
-    git -C /var/lib/openpagingserver/assets pull
-else
-    rm -rf /var/lib/openpagingserver/assets
-    git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
-fi
-
+checkout_default_branch_repo "$OPS_REPO" "$OPS_DIR"
+redownload_assets
 redownload_endpoint_modules
 
 cd "$OPS_DIR"
 
-python3 -m venv "$OPS_DIR/.venv"
-
-"$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-if [ -f "$OPS_DIR/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-fi
-
-if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-fi
-
-if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-fi
-
-"$OPS_DIR/.venv/bin/pip" install \
-  flask \
-  flask-cors \
-  pymysql \
-  waitress \
-  python-dotenv \
-  requests \
-  pillow \
-  numpy \
-  lxml \
-  aiohttp \
-  websockets \
-  cryptography \
-  passlib \
-  argon2-cffi
+install_python_dependencies
 
 if [ -f "$OPS_DIR/scripts/database-initialization.py" ]; then
     "$OPS_DIR/.venv/bin/python" "$OPS_DIR/scripts/database-initialization.py"
@@ -478,7 +354,7 @@ fi
 
 sleep 5
 
-cat > "$OPS_SERVICE" <<'EOF'
+cat > "$OPS_SERVICE" <<'EOF_SERVICE'
 [Unit]
 Description=Open Paging Server
 After=network-online.target mariadb.service
@@ -496,7 +372,7 @@ Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_SERVICE
 
 write_ops_marker
 
