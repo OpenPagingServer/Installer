@@ -4,10 +4,38 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+check_supported_cpu_architecture() {
+    arch="$(uname -m)"
+
+    case "$arch" in
+        x86_64|amd64|aarch64|arm64)
+            return 0
+            ;;
+        *)
+            echo "Open Paging Server is not compatible with your CPU architecture."
+            echo "Your CPU must be amd64 (x86_64) or arm64 (AArch64). Your architecture is $arch."
+            echo "Ensure you are using a 64-bit CPU and a 64-bit Opreating System."
+            exit 1
+            ;;
+    esac
+}
+
+check_supported_cpu_architecture
+
 INSTALLER_ENDPOINT="${OPS_INSTALLER_ENDPOINT:-https://install.openpagingserver.org/}"
+OPS_REPO="https://github.com/OpenPagingServer/OpenPagingServer.git"
+CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
+POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
+ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
 OPS_DIR="/opt/OpenPagingServer"
 OPS_SERVICE="/etc/systemd/system/openpagingserver.service"
 OPS_MARKER="/opt/OpenPagingServer/.openpagingserver-install"
+ASSETS_DIR="/var/lib/openpagingserver/assets"
+ENDPOINT_MODULES_DIR="/var/lib/openpagingserver/endpointmodules"
+TRUSTED_CA_DIR="/etc/openpagingserver/trustedca"
+TRUSTED_CA_CERT_URL="https://install.openpagingserver.org/rootca.crt"
+TRUSTED_CA_README_URL="https://install.openpagingserver.org/trustedca-dir.md"
+LEGACY_03_TARGET_REF="${OPS_LEGACY_03_TARGET_REF:-0.3.0}"
 
 service_exists() {
     systemctl list-unit-files "$1" >/dev/null 2>&1
@@ -51,6 +79,10 @@ is_real_openpagingserver_install() {
 
     if [ ! -f "$OPS_DIR/scripts/database-initialization.py" ]; then
         return 1
+    fi
+
+    if [ -d "$ENDPOINT_MODULES_DIR" ]; then
+        return 0
     fi
 
     if [ -d "$OPS_DIR/endpoint-modules" ]; then
@@ -99,6 +131,19 @@ is_legacy_0_1_version() {
     esac
 }
 
+is_legacy_0_1_or_0_2_version() {
+    CURRENT_VERSION="$(installed_ops_version)"
+
+    case "$CURRENT_VERSION" in
+        0.1|0.1.*|0.2|0.2.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 disable_legacy_nginx_if_needed() {
     if is_legacy_0_1_version; then
         CURRENT_VERSION="$(installed_ops_version)"
@@ -111,6 +156,27 @@ disable_legacy_nginx_if_needed() {
             systemctl stop nginx --now || true
             sleep 3
         fi
+    fi
+}
+
+latest_git_tag() {
+    git ls-remote --tags --refs "$1" 'refs/tags/*' 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -n 1
+}
+
+checkout_latest_tag_repo() {
+    repo="$1"
+    path="$2"
+    name="$3"
+    tag="$(latest_git_tag "$repo")"
+
+    rm -rf "$path"
+
+    if [ -n "$tag" ]; then
+        echo "Installing $name tag: $tag"
+        git clone --depth 1 --branch "$tag" "$repo" "$path"
+    else
+        echo "No tags found for $name. Using default branch."
+        git clone "$repo" "$path"
     fi
 }
 
@@ -235,17 +301,165 @@ download_release_into_ops_dir() {
     write_ops_marker
 }
 
+redownload_assets() {
+    mkdir -p /var/lib/openpagingserver
+    checkout_latest_tag_repo "$ASSETS_REPO" "$ASSETS_DIR" "assets"
+}
+
+latest_opsepm_asset_info() {
+    repo="$1"
+    tag="$2"
+
+    repo_path="${repo#https://github.com/}"
+    repo_path="${repo_path%.git}"
+
+    curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 -c 'import json, sys
+data = json.load(sys.stdin)
+for asset in data.get("assets", []):
+    name = asset.get("name", "")
+    url = asset.get("browser_download_url", "")
+    if name.lower().endswith(".opsepm") and url:
+        print(name + "\t" + url)
+        raise SystemExit(0)
+raise SystemExit(1)'
+}
+
+download_latest_opsepm_module() {
+    repo="$1"
+    name="$2"
+    tag="$(latest_git_tag "$repo")"
+
+    if [ -z "$tag" ]; then
+        echo "No tags found for $name."
+        exit 1
+    fi
+
+    asset_info="$(latest_opsepm_asset_info "$repo" "$tag" || true)"
+
+    if [ -z "$asset_info" ]; then
+        echo "No .opsepm asset found for $name tag: $tag"
+        exit 1
+    fi
+
+    asset_name="$(printf '%s' "$asset_info" | cut -f1)"
+    asset_url="$(printf '%s' "$asset_info" | cut -f2-)"
+
+    if [ -z "$asset_name" ] || [ -z "$asset_url" ]; then
+        echo "Invalid .opsepm asset info for $name tag: $tag"
+        exit 1
+    fi
+
+    case "$asset_name" in
+        */*|*..*)
+            echo "Unsafe .opsepm asset name for $name: $asset_name"
+            exit 1
+            ;;
+    esac
+
+    echo "Installing $name .opsepm from tag: $tag"
+    rm -f "$ENDPOINT_MODULES_DIR/$asset_name"
+    curl -fL "$asset_url" -o "$ENDPOINT_MODULES_DIR/$asset_name"
+}
+
 redownload_endpoint_modules() {
-    mkdir -p "$OPS_DIR/endpoint-modules"
+    mkdir -p "$ENDPOINT_MODULES_DIR"
+    rm -rf "$OPS_DIR/endpoint-modules/cisco" "$OPS_DIR/endpoint-modules/polycom"
+    rm -f "$OPS_DIR/endpoint-modules/"*.opsepm 2>/dev/null || true
+    rm -f "$ENDPOINT_MODULES_DIR/"*.opsepm 2>/dev/null || true
+    download_latest_opsepm_module "$CISCO_REPO" "Cisco module"
+    download_latest_opsepm_module "$POLYCOM_REPO" "Polycom module"
+}
 
-    rm -rf "$OPS_DIR/endpoint-modules/cisco"
-    git clone https://github.com/OpenPagingServer/cisco "$OPS_DIR/endpoint-modules/cisco"
+install_trusted_ca_files() {
+    mkdir -p "$TRUSTED_CA_DIR"
+    curl -fsSL "$TRUSTED_CA_CERT_URL" -o "$TRUSTED_CA_DIR/OpenPagingServerProject.crt"
+    curl -fsSL "$TRUSTED_CA_README_URL" -o "$TRUSTED_CA_DIR/README.md"
+}
 
-    rm -rf "$OPS_DIR/endpoint-modules/polycom"
-    git clone https://github.com/OpenPagingServer/polycom "$OPS_DIR/endpoint-modules/polycom"
+install_python_dependencies() {
+    if [ ! -x "$OPS_DIR/.venv/bin/python" ]; then
+        python3 -m venv "$OPS_DIR/.venv"
+    fi
+
+    "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
+
+    if [ -f "$OPS_DIR/requirements.txt" ]; then
+        "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
+    fi
+
+    "$OPS_DIR/.venv/bin/pip" install \
+      flask \
+      flask-cors \
+      pymysql \
+      waitress \
+      python-dotenv \
+      requests \
+      pillow \
+      numpy \
+      lxml \
+      aiohttp \
+      websockets \
+      cryptography \
+      passlib \
+      argon2-cffi
+}
+
+backup_env_file() {
+    ENV_BACKUP_FILE=""
+
+    if [ -f "$OPS_DIR/.env" ]; then
+        ENV_BACKUP_FILE="$(mktemp /tmp/openpagingserver-env.XXXXXX)"
+        cp "$OPS_DIR/.env" "$ENV_BACKUP_FILE"
+    fi
+}
+
+restore_env_file() {
+    if [ -n "${ENV_BACKUP_FILE:-}" ] && [ -f "$ENV_BACKUP_FILE" ]; then
+        cp "$ENV_BACKUP_FILE" "$OPS_DIR/.env"
+        rm -f "$ENV_BACKUP_FILE"
+    fi
+}
+
+upgrade_legacy_to_0_3() {
+    CURRENT_VERSION="$(installed_ops_version)"
+    SELECTED_REF="$LEGACY_03_TARGET_REF"
+
+    echo
+    echo "Detected Open Paging Server $CURRENT_VERSION. Reinstalling Open Paging Server ref: $SELECTED_REF while preserving .env."
+
+    disable_legacy_nginx_if_needed
+
+    if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
+        systemctl stop openpagingserver || true
+    fi
+
+    backup_env_file
+
+    rm -rf "$OPS_DIR"
+    mkdir -p "$OPS_DIR"
+
+    download_release_into_ops_dir
+    restore_env_file
+    redownload_assets
+    redownload_endpoint_modules
+    install_trusted_ca_files
+    install_python_dependencies
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+        systemctl restart openpagingserver || true
+    fi
+
+    echo
+    echo "Open Paging Server upgrade finished."
 }
 
 upgrade_openpagingserver() {
+    if is_legacy_0_1_or_0_2_version; then
+        upgrade_legacy_to_0_3
+        return 0
+    fi
+
     select_release
 
     echo
@@ -258,42 +472,10 @@ upgrade_openpagingserver() {
     fi
 
     download_release_into_ops_dir
+    redownload_assets
     redownload_endpoint_modules
-
-    if [ -x "$OPS_DIR/.venv/bin/python" ]; then
-        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-        if [ -f "$OPS_DIR/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-        fi
-
-        "$OPS_DIR/.venv/bin/pip" install waitress
-
-        if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-        fi
-
-        if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-        fi
-    else
-        python3 -m venv "$OPS_DIR/.venv"
-        "$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-        if [ -f "$OPS_DIR/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-        fi
-
-        "$OPS_DIR/.venv/bin/pip" install waitress
-
-        if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-        fi
-
-        if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-            "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-        fi
-    fi
+    install_trusted_ca_files
+    install_python_dependencies
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload || true
@@ -412,6 +594,7 @@ systemctl enable --now mariadb
 
 mkdir -p /opt
 mkdir -p /var/lib/openpagingserver
+mkdir -p "$ENDPOINT_MODULES_DIR"
 
 RELEASES_JSON=""
 trap cleanup_release_file EXIT
@@ -425,49 +608,13 @@ rm -rf "$OPS_DIR"
 mkdir -p "$OPS_DIR"
 
 download_release_into_ops_dir
-
-if [ -d /var/lib/openpagingserver/assets/.git ]; then
-    git -C /var/lib/openpagingserver/assets pull
-else
-    rm -rf /var/lib/openpagingserver/assets
-    git clone https://github.com/OpenPagingServer/assets /var/lib/openpagingserver/assets
-fi
-
+redownload_assets
 redownload_endpoint_modules
+install_trusted_ca_files
 
 cd "$OPS_DIR"
 
-python3 -m venv "$OPS_DIR/.venv"
-
-"$OPS_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
-
-if [ -f "$OPS_DIR/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/requirements.txt"
-fi
-
-if [ -f "$OPS_DIR/endpoint-modules/cisco/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/cisco/requirements.txt"
-fi
-
-if [ -f "$OPS_DIR/endpoint-modules/polycom/requirements.txt" ]; then
-    "$OPS_DIR/.venv/bin/pip" install -r "$OPS_DIR/endpoint-modules/polycom/requirements.txt"
-fi
-
-"$OPS_DIR/.venv/bin/pip" install \
-  flask \
-  flask-cors \
-  pymysql \
-  waitress \
-  python-dotenv \
-  requests \
-  pillow \
-  numpy \
-  lxml \
-  aiohttp \
-  websockets \
-  cryptography \
-  passlib \
-  argon2-cffi
+install_python_dependencies
 
 if [ -f "$OPS_DIR/scripts/database-initialization.py" ]; then
     "$OPS_DIR/.venv/bin/python" "$OPS_DIR/scripts/database-initialization.py"
@@ -539,13 +686,13 @@ for line in "${lines[@]}"; do
     line_len=${#line}
     left_pad=$(( (max_len - line_len) / 2 ))
     right_pad=$(( max_len - line_len - left_pad ))
-    
+
     left_space=""
     [ "$left_pad" -gt 0 ] && left_space=$(printf '%*s' "$left_pad" "")
-    
+
     right_space=""
     [ "$right_pad" -gt 0 ] && right_space=$(printf '%*s' "$right_pad" "")
-    
+
     echo "${pad_str}║  ${left_space}${line}${right_space}  ║"
 done
 
