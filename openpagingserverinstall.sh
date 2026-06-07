@@ -308,18 +308,48 @@ redownload_assets() {
 
 latest_opsepm_asset_info() {
     repo="$1"
+
+    repo_path="${repo#https://github.com/}"
+    repo_path="${repo_path%.git}"
+
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: OpenPagingServer-Installer" \
+      "https://api.github.com/repos/$repo_path/releases?per_page=20" | python3 -c 'import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(data, list):
+    raise SystemExit(1)
+for release in data:
+    tag = release.get("tag_name", "")
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        url = asset.get("browser_download_url", "")
+        if name.lower().endswith(".opsepm") and url:
+            print(tag + "\t" + name + "\t" + url)
+            raise SystemExit(0)
+raise SystemExit(1)'
+}
+
+latest_opsepm_asset_info_from_tag() {
+    repo="$1"
     tag="$2"
 
     repo_path="${repo#https://github.com/}"
     repo_path="${repo_path%.git}"
 
-    curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 -c 'import json, sys
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: OpenPagingServer-Installer" \
+      "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 -c 'import json, sys
 data = json.load(sys.stdin)
 for asset in data.get("assets", []):
     name = asset.get("name", "")
     url = asset.get("browser_download_url", "")
     if name.lower().endswith(".opsepm") and url:
-        print(name + "\t" + url)
+        print(data.get("tag_name", "") + "\t" + name + "\t" + url)
         raise SystemExit(0)
 raise SystemExit(1)'
 }
@@ -327,25 +357,31 @@ raise SystemExit(1)'
 download_latest_opsepm_module() {
     repo="$1"
     name="$2"
-    tag="$(latest_git_tag "$repo")"
 
-    if [ -z "$tag" ]; then
-        echo "No tags found for $name."
-        exit 1
-    fi
-
-    asset_info="$(latest_opsepm_asset_info "$repo" "$tag" || true)"
+    asset_info="$(latest_opsepm_asset_info "$repo" || true)"
 
     if [ -z "$asset_info" ]; then
-        echo "No .opsepm asset found for $name tag: $tag"
+        tag="$(latest_git_tag "$repo")"
+
+        if [ -z "$tag" ]; then
+            echo "No tags found for $name."
+            exit 1
+        fi
+
+        asset_info="$(latest_opsepm_asset_info_from_tag "$repo" "$tag" || true)"
+    fi
+
+    if [ -z "$asset_info" ]; then
+        echo "No .opsepm release asset found for $name."
         exit 1
     fi
 
-    asset_name="$(printf '%s' "$asset_info" | cut -f1)"
-    asset_url="$(printf '%s' "$asset_info" | cut -f2-)"
+    asset_tag="$(printf '%s' "$asset_info" | cut -f1)"
+    asset_name="$(printf '%s' "$asset_info" | cut -f2)"
+    asset_url="$(printf '%s' "$asset_info" | cut -f3-)"
 
     if [ -z "$asset_name" ] || [ -z "$asset_url" ]; then
-        echo "Invalid .opsepm asset info for $name tag: $tag"
+        echo "Invalid .opsepm asset info for $name."
         exit 1
     fi
 
@@ -356,9 +392,21 @@ download_latest_opsepm_module() {
             ;;
     esac
 
-    echo "Installing $name .opsepm from tag: $tag"
-    rm -f "$ENDPOINT_MODULES_DIR/$asset_name"
-    curl -fL "$asset_url" -o "$ENDPOINT_MODULES_DIR/$asset_name"
+    output_file="$ENDPOINT_MODULES_DIR/$asset_name"
+
+    echo "Installing $name .opsepm from release: $asset_tag"
+    echo "Saving as: $output_file"
+    rm -f "$output_file"
+    curl -fL \
+      -H "User-Agent: OpenPagingServer-Installer" \
+      "$asset_url" \
+      -o "$output_file"
+
+    if [ ! -s "$output_file" ]; then
+        echo "Downloaded .opsepm file is missing or empty: $output_file"
+        rm -f "$output_file"
+        exit 1
+    fi
 }
 
 redownload_endpoint_modules() {
