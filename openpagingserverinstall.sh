@@ -14,7 +14,7 @@ check_supported_cpu_architecture() {
         *)
             echo "Open Paging Server is not compatible with your CPU architecture."
             echo "Your CPU must be amd64 (x86_64) or arm64 (AArch64). Your architecture is $arch."
-            echo "Ensure you are using a 64-bit CPU and a 64-bit Opreating System."
+            echo "Ensure you are using a 64-bit CPU and a 64-bit Operating System."
             exit 1
             ;;
     esac
@@ -23,19 +23,17 @@ check_supported_cpu_architecture() {
 check_supported_cpu_architecture
 
 INSTALLER_ENDPOINT="${OPS_INSTALLER_ENDPOINT:-https://install.openpagingserver.org/}"
-OPS_REPO="https://github.com/OpenPagingServer/OpenPagingServer.git"
-CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
-POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
-ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
 OPS_DIR="/opt/OpenPagingServer"
 OPS_SERVICE="/etc/systemd/system/openpagingserver.service"
 OPS_MARKER="/opt/OpenPagingServer/.openpagingserver-install"
 ASSETS_DIR="/var/lib/openpagingserver/assets"
 ENDPOINT_MODULES_DIR="/var/lib/openpagingserver/endpointmodules"
 TRUSTED_CA_DIR="/etc/openpagingserver/trustedca"
-TRUSTED_CA_CERT_URL="https://install.openpagingserver.org/rootca.crt"
+CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
+POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
+ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
+ROOT_CA_URL="https://install.openpagingserver.org/rootca.crt"
 TRUSTED_CA_README_URL="https://install.openpagingserver.org/trustedca-dir.md"
-LEGACY_03_TARGET_REF="${OPS_LEGACY_03_TARGET_REF:-0.3.0}"
 
 service_exists() {
     systemctl list-unit-files "$1" >/dev/null 2>&1
@@ -81,23 +79,15 @@ is_real_openpagingserver_install() {
         return 1
     fi
 
-    if [ -d "$ENDPOINT_MODULES_DIR" ]; then
-        return 0
-    fi
-
-    if [ -d "$OPS_DIR/endpoint-modules" ]; then
-        return 0
-    fi
-
-    return 1
+    return 0
 }
 
 write_ops_marker() {
-    cat > "$OPS_MARKER" <<'EOF'
+    cat > "$OPS_MARKER" <<'EOF_MARKER'
 PROJECT=OpenPagingServer
 SOURCE=https://github.com/OpenPagingServer/OpenPagingServer
 INSTALL_PATH=/opt/OpenPagingServer
-EOF
+EOF_MARKER
 }
 
 installed_ops_version() {
@@ -131,7 +121,7 @@ is_legacy_0_1_version() {
     esac
 }
 
-is_legacy_0_1_or_0_2_version() {
+is_legacy_pre_0_3_version() {
     CURRENT_VERSION="$(installed_ops_version)"
 
     case "$CURRENT_VERSION" in
@@ -156,27 +146,6 @@ disable_legacy_nginx_if_needed() {
             systemctl stop nginx --now || true
             sleep 3
         fi
-    fi
-}
-
-latest_git_tag() {
-    git ls-remote --tags --refs "$1" 'refs/tags/*' 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -n 1
-}
-
-checkout_latest_tag_repo() {
-    repo="$1"
-    path="$2"
-    name="$3"
-    tag="$(latest_git_tag "$repo")"
-
-    rm -rf "$path"
-
-    if [ -n "$tag" ]; then
-        echo "Installing $name tag: $tag"
-        git clone --depth 1 --branch "$tag" "$repo" "$path"
-    else
-        echo "No tags found for $name. Using default branch."
-        git clone "$repo" "$path"
     fi
 }
 
@@ -301,126 +270,94 @@ download_release_into_ops_dir() {
     write_ops_marker
 }
 
-redownload_assets() {
-    mkdir -p /var/lib/openpagingserver
-    checkout_latest_tag_repo "$ASSETS_REPO" "$ASSETS_DIR" "assets"
+latest_git_tag() {
+    git ls-remote --tags --refs "$1" 'refs/tags/*' 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -n 1
 }
 
 latest_opsepm_asset_info() {
-    repo="$1"
-
-    repo_path="${repo#https://github.com/}"
-    repo_path="${repo_path%.git}"
-
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: OpenPagingServer-Installer" \
-      "https://api.github.com/repos/$repo_path/releases?per_page=20" | python3 -c 'import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(1)
-if not isinstance(data, list):
-    raise SystemExit(1)
-for release in data:
-    tag = release.get("tag_name", "")
-    for asset in release.get("assets", []):
-        name = asset.get("name", "")
-        url = asset.get("browser_download_url", "")
-        if name.lower().endswith(".opsepm") and url:
-            print(tag + "\t" + name + "\t" + url)
-            raise SystemExit(0)
-raise SystemExit(1)'
-}
-
-latest_opsepm_asset_info_from_tag() {
     repo="$1"
     tag="$2"
 
     repo_path="${repo#https://github.com/}"
     repo_path="${repo_path%.git}"
 
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: OpenPagingServer-Installer" \
-      "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 -c 'import json, sys
+    curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 - <<'PY'
+import json
+import sys
+
 data = json.load(sys.stdin)
 for asset in data.get("assets", []):
     name = asset.get("name", "")
     url = asset.get("browser_download_url", "")
     if name.lower().endswith(".opsepm") and url:
-        print(data.get("tag_name", "") + "\t" + name + "\t" + url)
+        print(name)
+        print(url)
         raise SystemExit(0)
-raise SystemExit(1)'
+raise SystemExit(1)
+PY
 }
 
 download_latest_opsepm_module() {
     repo="$1"
     name="$2"
+    tag="$(latest_git_tag "$repo")"
 
-    asset_info="$(latest_opsepm_asset_info "$repo" || true)"
-
-    if [ -z "$asset_info" ]; then
-        tag="$(latest_git_tag "$repo")"
-
-        if [ -z "$tag" ]; then
-            echo "No tags found for $name."
-            exit 1
-        fi
-
-        asset_info="$(latest_opsepm_asset_info_from_tag "$repo" "$tag" || true)"
-    fi
-
-    if [ -z "$asset_info" ]; then
-        echo "No .opsepm release asset found for $name."
+    if [ -z "$tag" ]; then
+        echo "No tags found for $name."
         exit 1
     fi
 
-    asset_tag="$(printf '%s' "$asset_info" | cut -f1)"
-    asset_name="$(printf '%s' "$asset_info" | cut -f2)"
-    asset_url="$(printf '%s' "$asset_info" | cut -f3-)"
+    asset_info="$(latest_opsepm_asset_info "$repo" "$tag" || true)"
 
-    if [ -z "$asset_name" ] || [ -z "$asset_url" ]; then
-        echo "Invalid .opsepm asset info for $name."
+    if [ -z "$asset_info" ]; then
+        echo "No .opsepm asset found for $name tag: $tag"
         exit 1
     fi
 
-    case "$asset_name" in
-        */*|*..*)
-            echo "Unsafe .opsepm asset name for $name: $asset_name"
-            exit 1
-            ;;
-    esac
+    asset_name="$(printf '%s\n' "$asset_info" | sed -n '1p')"
+    asset_url="$(printf '%s\n' "$asset_info" | sed -n '2p')"
+    output="$ENDPOINT_MODULES_DIR/$asset_name"
 
-    output_file="$ENDPOINT_MODULES_DIR/$asset_name"
+    echo "Installing $name .opsepm from tag: $tag"
+    echo "Downloading $asset_name"
+    rm -f "$output"
+    curl -fL "$asset_url" -o "$output"
 
-    echo "Installing $name .opsepm from release: $asset_tag"
-    echo "Saving as: $output_file"
-    rm -f "$output_file"
-    curl -fL \
-      -H "User-Agent: OpenPagingServer-Installer" \
-      "$asset_url" \
-      -o "$output_file"
-
-    if [ ! -s "$output_file" ]; then
-        echo "Downloaded .opsepm file is missing or empty: $output_file"
-        rm -f "$output_file"
+    if [ ! -s "$output" ]; then
+        echo "Downloaded .opsepm file is missing or empty: $output"
         exit 1
     fi
 }
 
 redownload_endpoint_modules() {
     mkdir -p "$ENDPOINT_MODULES_DIR"
-    rm -rf "$OPS_DIR/endpoint-modules/cisco" "$OPS_DIR/endpoint-modules/polycom"
-    rm -f "$OPS_DIR/endpoint-modules/"*.opsepm 2>/dev/null || true
-    rm -f "$ENDPOINT_MODULES_DIR/"*.opsepm 2>/dev/null || true
+    rm -rf "$OPS_DIR/endpoint-modules"
+    find "$ENDPOINT_MODULES_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.opsepm' -delete
     download_latest_opsepm_module "$CISCO_REPO" "Cisco module"
     download_latest_opsepm_module "$POLYCOM_REPO" "Polycom module"
 }
 
-install_trusted_ca_files() {
+redownload_assets() {
+    mkdir -p /var/lib/openpagingserver
+
+    if [ -d "$ASSETS_DIR/.git" ]; then
+        git -C "$ASSETS_DIR" fetch --all --tags --prune
+        default_branch="$(git -C "$ASSETS_DIR" remote show origin | awk '/HEAD branch/ {print $NF}')"
+        if [ -z "$default_branch" ]; then
+            default_branch="main"
+        fi
+        git -C "$ASSETS_DIR" checkout "$default_branch"
+        git -C "$ASSETS_DIR" reset --hard "origin/$default_branch"
+        git -C "$ASSETS_DIR" clean -fdx
+    else
+        rm -rf "$ASSETS_DIR"
+        git clone "$ASSETS_REPO" "$ASSETS_DIR"
+    fi
+}
+
+install_trusted_ca() {
     mkdir -p "$TRUSTED_CA_DIR"
-    curl -fsSL "$TRUSTED_CA_CERT_URL" -o "$TRUSTED_CA_DIR/OpenPagingServerProject.crt"
+    curl -fsSL "$ROOT_CA_URL" -o "$TRUSTED_CA_DIR/OpenPagingServerProject.crt"
     curl -fsSL "$TRUSTED_CA_README_URL" -o "$TRUSTED_CA_DIR/README.md"
 }
 
@@ -452,77 +389,48 @@ install_python_dependencies() {
       argon2-cffi
 }
 
-backup_env_file() {
+backup_env_for_legacy_upgrade() {
     ENV_BACKUP_FILE=""
 
-    if [ -f "$OPS_DIR/.env" ]; then
+    if is_legacy_pre_0_3_version && [ -f "$OPS_DIR/.env" ]; then
         ENV_BACKUP_FILE="$(mktemp /tmp/openpagingserver-env.XXXXXX)"
         cp "$OPS_DIR/.env" "$ENV_BACKUP_FILE"
+        echo "Backed up $OPS_DIR/.env"
     fi
 }
 
-restore_env_file() {
+restore_env_for_legacy_upgrade() {
     if [ -n "${ENV_BACKUP_FILE:-}" ] && [ -f "$ENV_BACKUP_FILE" ]; then
         cp "$ENV_BACKUP_FILE" "$OPS_DIR/.env"
         rm -f "$ENV_BACKUP_FILE"
+        echo "Restored $OPS_DIR/.env"
     fi
-}
-
-upgrade_legacy_to_0_3() {
-    CURRENT_VERSION="$(installed_ops_version)"
-    SELECTED_REF="$LEGACY_03_TARGET_REF"
-
-    echo
-    echo "Detected Open Paging Server $CURRENT_VERSION. Reinstalling Open Paging Server ref: $SELECTED_REF while preserving .env."
-
-    disable_legacy_nginx_if_needed
-
-    if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
-        systemctl stop openpagingserver || true
-    fi
-
-    backup_env_file
-
-    rm -rf "$OPS_DIR"
-    mkdir -p "$OPS_DIR"
-
-    download_release_into_ops_dir
-    restore_env_file
-    redownload_assets
-    redownload_endpoint_modules
-    install_trusted_ca_files
-    install_python_dependencies
-
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload || true
-        systemctl restart openpagingserver || true
-    fi
-
-    echo
-    echo "Open Paging Server upgrade finished."
 }
 
 upgrade_openpagingserver() {
-    if is_legacy_0_1_or_0_2_version; then
-        upgrade_legacy_to_0_3
-        return 0
-    fi
-
     select_release
 
     echo
     echo "Upgrading Open Paging Server ref: $SELECTED_REF"
 
     disable_legacy_nginx_if_needed
+    backup_env_for_legacy_upgrade
 
     if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
         systemctl stop openpagingserver || true
     fi
 
+    if is_legacy_pre_0_3_version; then
+        echo "Detected 0.1.x or 0.2.x install. Replacing $OPS_DIR for 0.3.x upgrade."
+        rm -rf "$OPS_DIR"
+        mkdir -p "$OPS_DIR"
+    fi
+
     download_release_into_ops_dir
+    restore_env_for_legacy_upgrade
     redownload_assets
     redownload_endpoint_modules
-    install_trusted_ca_files
+    install_trusted_ca
     install_python_dependencies
 
     if command -v systemctl >/dev/null 2>&1; then
@@ -581,7 +489,7 @@ existing_install_menu() {
     esac
 }
 
-cat <<'EOF'
+cat <<'EOF_WARNING'
 
 ==============================================
 WARNING: This is beta software
@@ -600,7 +508,7 @@ The Cisco and Polycom modules will also be downloaded.
 
 NOTE: If you are updating from 0.1, nginx will be stopped.
 
-EOF
+EOF_WARNING
 
 echo
 printf ":" > /dev/tty
@@ -658,9 +566,11 @@ mkdir -p "$OPS_DIR"
 download_release_into_ops_dir
 redownload_assets
 redownload_endpoint_modules
-install_trusted_ca_files
+install_trusted_ca
 
 cd "$OPS_DIR"
+
+python3 -m venv "$OPS_DIR/.venv"
 
 install_python_dependencies
 
@@ -673,7 +583,7 @@ fi
 
 sleep 5
 
-cat > "$OPS_SERVICE" <<'EOF'
+cat > "$OPS_SERVICE" <<'EOF_SERVICE'
 [Unit]
 Description=Open Paging Server
 After=network-online.target mariadb.service
@@ -691,7 +601,7 @@ Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_SERVICE
 
 write_ops_marker
 
@@ -734,13 +644,13 @@ for line in "${lines[@]}"; do
     line_len=${#line}
     left_pad=$(( (max_len - line_len) / 2 ))
     right_pad=$(( max_len - line_len - left_pad ))
-
+    
     left_space=""
     [ "$left_pad" -gt 0 ] && left_space=$(printf '%*s' "$left_pad" "")
-
+    
     right_space=""
     [ "$right_pad" -gt 0 ] && right_space=$(printf '%*s' "$right_pad" "")
-
+    
     echo "${pad_str}║  ${left_space}${line}${right_space}  ║"
 done
 
