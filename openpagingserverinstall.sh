@@ -281,11 +281,20 @@ latest_opsepm_asset_info() {
     repo_path="${repo#https://github.com/}"
     repo_path="${repo_path%.git}"
 
-    curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" | python3 - <<'PY'
+    release_json="$(mktemp /tmp/openpagingserver-module-release.XXXXXX.json)"
+
+    if ! curl -fsSL "https://api.github.com/repos/$repo_path/releases/tags/$tag" -o "$release_json"; then
+        rm -f "$release_json"
+        return 1
+    fi
+
+    python3 - "$release_json" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-data = json.load(sys.stdin)
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
 for asset in data.get("assets", []):
     name = asset.get("name", "")
     url = asset.get("browser_download_url", "")
@@ -295,8 +304,10 @@ for asset in data.get("assets", []):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
+    result="$?"
+    rm -f "$release_json"
+    return "$result"
 }
-
 download_latest_opsepm_module() {
     repo="$1"
     name="$2"
