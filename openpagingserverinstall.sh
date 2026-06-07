@@ -416,6 +416,25 @@ restore_env_for_legacy_upgrade() {
     fi
 }
 
+backup_venv_for_legacy_upgrade() {
+    VENV_BACKUP_DIR=""
+
+    if is_legacy_pre_0_3_version && [ -d "$OPS_DIR/.venv" ]; then
+        VENV_BACKUP_DIR="$(mktemp -d /tmp/openpagingserver-venv.XXXXXX)"
+        cp -a "$OPS_DIR/.venv" "$VENV_BACKUP_DIR/.venv"
+        echo "Backed up $OPS_DIR/.venv"
+    fi
+}
+
+restore_venv_for_legacy_upgrade() {
+    if [ -n "${VENV_BACKUP_DIR:-}" ] && [ -d "$VENV_BACKUP_DIR/.venv" ]; then
+        rm -rf "$OPS_DIR/.venv"
+        cp -a "$VENV_BACKUP_DIR/.venv" "$OPS_DIR/.venv"
+        rm -rf "$VENV_BACKUP_DIR"
+        echo "Restored $OPS_DIR/.venv"
+    fi
+}
+
 upgrade_openpagingserver() {
     select_release
 
@@ -424,6 +443,7 @@ upgrade_openpagingserver() {
 
     disable_legacy_nginx_if_needed
     backup_env_for_legacy_upgrade
+    backup_venv_for_legacy_upgrade
 
     if command -v systemctl >/dev/null 2>&1 && service_exists openpagingserver.service; then
         systemctl stop openpagingserver || true
@@ -437,6 +457,7 @@ upgrade_openpagingserver() {
 
     download_release_into_ops_dir
     restore_env_for_legacy_upgrade
+    restore_venv_for_legacy_upgrade
     redownload_assets
     redownload_endpoint_modules
     install_trusted_ca
