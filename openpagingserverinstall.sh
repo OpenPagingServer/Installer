@@ -31,6 +31,8 @@ ENDPOINT_MODULES_DIR="/var/lib/openpagingserver/endpointmodules"
 TRUSTED_CA_DIR="/etc/openpagingserver/trustedca"
 CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
 POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
+YEALINK_REPO="https://github.com/OpenPagingServer/yealink.git"
+DISCORD_WEBHOOK_REPO="https://github.com/OpenPagingServer/discordwebhook.git"
 ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
 ROOT_CA_URL="https://install.openpagingserver.org/rootca.crt"
 TRUSTED_CA_README_URL="https://install.openpagingserver.org/trustedca-dir.md"
@@ -132,6 +134,27 @@ is_legacy_pre_0_3_version() {
             return 1
             ;;
     esac
+}
+
+is_0_3_or_later_version() {
+    CURRENT_VERSION="$(installed_ops_version)"
+
+    if [ -z "$CURRENT_VERSION" ]; then
+        return 1
+    fi
+
+    python3 - "$CURRENT_VERSION" <<'PY'
+import re
+import sys
+
+version = sys.argv[1]
+match = re.match(r'^(\d+)\.(\d+)\.(\d+)', version)
+if not match:
+    raise SystemExit(1)
+
+major, minor, patch = map(int, match.groups())
+raise SystemExit(0 if (major, minor, patch) >= (0, 3, 0) else 1)
+PY
 }
 
 disable_legacy_nginx_if_needed() {
@@ -344,6 +367,8 @@ redownload_endpoint_modules() {
     find "$ENDPOINT_MODULES_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.opsepm' -delete
     download_latest_opsepm_module "$CISCO_REPO" "Cisco module"
     download_latest_opsepm_module "$POLYCOM_REPO" "Polycom module"
+    download_latest_opsepm_module "$YEALINK_REPO" "Yealink module"
+    download_latest_opsepm_module "$DISCORD_WEBHOOK_REPO" "Discord Webhook module"
 }
 
 redownload_assets() {
@@ -459,6 +484,9 @@ upgrade_openpagingserver() {
     restore_env_for_legacy_upgrade
     restore_venv_for_legacy_upgrade
     redownload_assets
+    if is_0_3_or_later_version || ! is_legacy_pre_0_3_version; then
+        echo "Refreshing all endpoint modules."
+    fi
     redownload_endpoint_modules
     install_trusted_ca
     install_python_dependencies
@@ -534,7 +562,7 @@ and that you will NOT use the software in its current form for life safety. If y
 
 This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
-The Cisco and Polycom modules will also be downloaded.
+The Cisco, Polycom, Yealink, and Discord Webhook modules will also be downloaded.
 
 NOTE: If you are updating from 0.1, nginx will be stopped.
 
