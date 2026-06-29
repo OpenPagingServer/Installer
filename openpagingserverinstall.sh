@@ -483,7 +483,7 @@ upgrade_openpagingserver() {
     download_release_into_ops_dir
     restore_env_for_legacy_upgrade
     restore_venv_for_legacy_upgrade
-    redownload_assets
+    echo "Keeping existing assets directory unchanged during upgrade."
     if is_0_3_or_later_version || ! is_legacy_pre_0_3_version; then
         echo "Refreshing all endpoint modules."
     fi
