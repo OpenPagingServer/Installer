@@ -20,7 +20,83 @@ check_supported_cpu_architecture() {
     esac
 }
 
+check_supported_operating_system() {
+    if [ ! -f /etc/os-release ]; then
+        echo "Open Paging Server requires Debian 11 or Ubuntu 20.04 or later."
+        echo "You are running an unknown operating system."
+        exit 1
+    fi
+
+    . /etc/os-release
+
+    OS_NAME="${PRETTY_NAME:-${NAME:-unknown operating system}}"
+    OS_ID="${ID:-}"
+    OS_ID="${OS_ID,,}"
+    OS_VERSION="${VERSION_ID:-0}"
+
+    if printf '%s\n' "$OS_NAME" "$OS_ID" | grep -qi "Sangoma"; then
+        echo
+        echo "Open Paging Server is designed to be installed on a separate virtual machine or server instead of being installed alongside FreePBX or Asterisk. Please install a Linux box and try again."
+        echo
+        echo "You are running $OS_NAME"
+        exit 1
+    fi
+
+    supported=0
+
+    case "$OS_ID" in
+        debian)
+            if command -v dpkg >/dev/null 2>&1 && dpkg --compare-versions "$OS_VERSION" ge "11"; then
+                supported=1
+            fi
+            ;;
+        ubuntu)
+            if command -v dpkg >/dev/null 2>&1 && dpkg --compare-versions "$OS_VERSION" ge "20.04"; then
+                supported=1
+            fi
+            ;;
+    esac
+
+    if [ "$supported" -eq 0 ]; then
+        echo "Open Paging Server requires Debian 11 or Ubuntu 20.04 or later."
+        echo "You are running $OS_NAME"
+        exit 1
+    fi
+
+    if command -v asterisk >/dev/null 2>&1 \
+        || command -v fwconsole >/dev/null 2>&1 \
+        || command -v amportal >/dev/null 2>&1 \
+        || [ -d /etc/freepbx ] \
+        || [ -d /var/www/html/admin ] \
+        || [ -d /etc/asterisk ] \
+        || [ -f /etc/asterisk/asterisk.conf ]; then
+
+        echo
+        echo "Open Paging Server is designed to be installed on a separate virtual machine or server instead of being installed alongside FreePBX or Asterisk. If you would like to continue, ensure that SIP and Web ports don't overlap."
+        echo
+
+        while true; do
+            printf "Continue [y/n]: " > /dev/tty
+            read -r answer < /dev/tty
+
+            case "${answer,,}" in
+                y|yes)
+                    break
+                    ;;
+                n|no)
+                    echo "Aborting."
+                    exit 1
+                    ;;
+                *)
+                    echo "Please enter y or n."
+                    ;;
+            esac
+        done
+    fi
+}
+
 check_supported_cpu_architecture
+check_supported_operating_system
 
 INSTALLER_ENDPOINT="${OPS_INSTALLER_ENDPOINT:-https://install.openpagingserver.org/}"
 OPS_DIR="/opt/OpenPagingServer"
@@ -560,7 +636,7 @@ You will MOST likely encounter bugs. If so, please make an issue on the project 
 By continuing, you authorize that this is being used in a lab or hobby environment only,
 and that you will NOT use the software in its current form for life safety. If you agree, type "LAB USE ONLY".
 
-This script is currently only designed for Debian. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
+This script is currently only designed for Debian 11 or later, or Ubuntu 20.04 or later. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
 The Cisco, Polycom, Yealink, and Discord Webhook modules will also be downloaded.
 
@@ -579,11 +655,6 @@ fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run this script as root or with sudo."
-    exit 1
-fi
-
-if ! grep -qi debian /etc/os-release; then
-    echo "This installer is only designed for Debian."
     exit 1
 fi
 
