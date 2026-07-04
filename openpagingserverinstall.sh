@@ -673,7 +673,7 @@ apt install -y \
   build-essential pkg-config \
   mariadb-server mariadb-client \
   ffmpeg fontconfig fonts-dejavu-core \
-  git curl ca-certificates tar
+  git curl ca-certificates tar festival
 
 systemctl enable --now mariadb
 
