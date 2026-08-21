@@ -670,6 +670,7 @@ apt update
 
 apt install -y \
   python3 python3-venv python3-pip python3-dev \
+  certbot python3-certbot \
   build-essential pkg-config \
   mariadb-server mariadb-client \
   ffmpeg fontconfig fonts-dejavu-core \
