@@ -109,6 +109,8 @@ CISCO_REPO="https://github.com/OpenPagingServer/cisco.git"
 POLYCOM_REPO="https://github.com/OpenPagingServer/polycom.git"
 YEALINK_REPO="https://github.com/OpenPagingServer/yealink.git"
 DISCORD_WEBHOOK_REPO="https://github.com/OpenPagingServer/discordwebhook.git"
+NWS_REPO="https://github.com/OpenPagingServer/NWS.git"
+SNOM_REPO="https://github.com/OpenPagingServer/snom.git"
 ASSETS_REPO="https://github.com/OpenPagingServer/assets.git"
 ROOT_CA_URL="https://install.openpagingserver.org/rootca.crt"
 TRUSTED_CA_README_URL="https://install.openpagingserver.org/trustedca-dir.md"
@@ -445,6 +447,8 @@ redownload_endpoint_modules() {
     download_latest_opsepm_module "$POLYCOM_REPO" "Polycom module"
     download_latest_opsepm_module "$YEALINK_REPO" "Yealink module"
     download_latest_opsepm_module "$DISCORD_WEBHOOK_REPO" "Discord Webhook module"
+    download_latest_opsepm_module "$NWS_REPO" "NWS module"
+    download_latest_opsepm_module "$SNOM_REPO" "snom module"
 }
 
 redownload_assets() {
@@ -638,7 +642,7 @@ and that you will NOT use the software in its current form for life safety. If y
 
 This script is currently only designed for Debian 11 or later, or Ubuntu 20.04 or later. Python 3 will be installed if not already. MariaDB will be installed if not already, and a database will be created. 
 Open Paging Server will be downloaded to /opt/OpenPagingServer, a venv will be created inside that directory, and a systemd service will be created. 
-The Cisco, Polycom, Yealink, and Discord Webhook modules will also be downloaded.
+The Cisco, Polycom, Yealink, Discord Webhook, NWS, and snom modules will also be downloaded.
 
 NOTE: If you are updating from 0.1, nginx will be stopped.
 
