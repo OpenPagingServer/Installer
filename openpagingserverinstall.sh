@@ -500,7 +500,8 @@ install_python_dependencies() {
       websockets \
       cryptography \
       passlib \
-      argon2-cffi
+      argon2-cffi \
+      google-auth[requests]
 }
 
 backup_env_for_legacy_upgrade() {
