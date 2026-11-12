@@ -475,6 +475,20 @@ install_trusted_ca() {
     curl -fsSL "$TRUSTED_CA_README_URL" -o "$TRUSTED_CA_DIR/README.md"
 }
 
+install_debian_dependencies() {
+    export DEBIAN_FRONTEND=noninteractive
+    export DEBIAN_PRIORITY=critical
+    printf '%s\n' 'krb5-config krb5-config/default_realm string ' 'krb5-config krb5-config/add_servers_realm string ' 'krb5-config krb5-config/add_servers boolean false' | debconf-set-selections
+    apt update
+    apt install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+      python3 python3-venv python3-pip python3-dev \
+      certbot python3-certbot \
+      build-essential pkg-config libkrb5-dev krb5-user \
+      mariadb-server mariadb-client \
+      ffmpeg fontconfig fonts-dejavu-core \
+      git curl ca-certificates tar festival
+}
+
 install_python_dependencies() {
     if [ ! -x "$OPS_DIR/.venv/bin/python" ]; then
         python3 -m venv "$OPS_DIR/.venv"
@@ -542,6 +556,7 @@ restore_venv_for_legacy_upgrade() {
 }
 
 upgrade_openpagingserver() {
+    install_debian_dependencies
     select_release
 
     echo
@@ -669,17 +684,7 @@ fi
 
 echo "Continuing..."
 
-export DEBIAN_FRONTEND=noninteractive
-
-apt update
-
-apt install -y \
-  python3 python3-venv python3-pip python3-dev \
-  certbot python3-certbot \
-  build-essential pkg-config \
-  mariadb-server mariadb-client \
-  ffmpeg fontconfig fonts-dejavu-core \
-  git curl ca-certificates tar festival
+install_debian_dependencies
 
 systemctl enable --now mariadb
 
